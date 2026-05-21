@@ -4,16 +4,69 @@
  */
 
 #include <errno.h>
+#include <netinet/in.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
+#include <unistd.h>
 
 #include <linux/rds.h>
 
 #include "tst_test.h"
+#include "lapi/io_uring.h"
+
+#ifndef IORING_REGISTER_CLONE_BUFFERS
+# define IORING_REGISTER_CLONE_BUFFERS	30
+#endif
+
+#ifndef SO_ZEROCOPY
+# define SO_ZEROCOPY	60
+#endif
+
+#define TEST_PORT	20000
+
+struct clone_buffers_arg {
+	uint32_t src_fd;
+	uint32_t flags;
+	uint32_t pad[6];
+};
+
+static int ring_fd1 = -1;
+static int ring_fd2 = -1;
+static int buffer_registered;
+static int buffer_cloned;
+static long page_size;
+static void *mapped_pages;
+
+static void cleanup(void);
 
 static void setup(void)
 {
+	struct io_uring_params params = {};
 	int fd;
 	int val;
+
+	page_size = SAFE_SYSCONF(_SC_PAGESIZE);
+	if (page_size <= 0)
+		tst_brk(TBROK, "Invalid page size");
+
+	io_uring_setup_supported_by_kernel();
+
+	ring_fd1 = io_uring_setup(1, &params);
+	if (ring_fd1 < 0) {
+		if (errno == EPERM || errno == EACCES)
+			tst_brk(TCONF | TERRNO, "io_uring is disabled");
+
+		tst_brk(TBROK | TERRNO, "io_uring_setup() failed for first ring");
+	}
+
+	memset(&params, 0, sizeof(params));
+
+	ring_fd2 = io_uring_setup(1, &params);
+	if (ring_fd2 < 0)
+		tst_brk(TBROK | TERRNO, "io_uring_setup() failed for second ring");
 
 	fd = socket(AF_RDS, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
 	if (fd < 0) {
@@ -32,15 +85,137 @@ static void setup(void)
 		tst_brk(TBROK | TERRNO, "setsockopt(SO_RDS_TRANSPORT) failed");
 	}
 
+	mapped_pages = SAFE_MMAP(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
+				 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	memset(mapped_pages, 0xa5, page_size);
+	SAFE_MPROTECT((char *)mapped_pages + page_size, page_size, PROT_NONE);
+
+	struct iovec iov = {
+		.iov_base = mapped_pages,
+		.iov_len = page_size,
+	};
+
+	if (io_uring_register(ring_fd1, IORING_REGISTER_BUFFERS, &iov, 1)) {
+		if (errno == ENOMEM)
+			tst_brk(TCONF, "Not enough memory to register io_uring buffer");
+
+		tst_brk(TBROK | TERRNO, "IORING_REGISTER_BUFFERS failed");
+	}
+
+	buffer_registered = 1;
+
+	struct clone_buffers_arg clone = {
+		.src_fd = ring_fd1,
+	};
+
+	if (io_uring_register(ring_fd2, IORING_REGISTER_CLONE_BUFFERS, &clone, 1)) {
+		if (errno == EINVAL || errno == EOPNOTSUPP)
+			tst_brk(TCONF | TERRNO, "IORING_REGISTER_CLONE_BUFFERS is not supported");
+
+		tst_brk(TBROK | TERRNO, "IORING_REGISTER_CLONE_BUFFERS failed");
+	}
+
+	buffer_cloned = 1;
+
 	SAFE_CLOSE(fd);
 }
 
 static void run(void)
 {
-	tst_res(TPASS, "RDS TCP transport is available");
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+		.sin_port = htons(TEST_PORT),
+	};
+	char control[CMSG_SPACE(sizeof(uint32_t))];
+	struct cmsghdr *cmsg;
+	struct iovec iov = {
+		.iov_base = mapped_pages,
+		.iov_len = 2 * page_size,
+	};
+	struct msghdr msg = {
+		.msg_name = &addr,
+		.msg_namelen = sizeof(addr),
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = control,
+		.msg_controllen = sizeof(control),
+	};
+	int fd;
+	int ret;
+	int val;
+
+	fd = SAFE_SOCKET(AF_RDS, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+
+	val = 1;
+	SAFE_SETSOCKOPT(fd, SOL_SOCKET, SO_ZEROCOPY, &val, sizeof(val));
+
+	val = RDS_TRANS_TCP;
+	SAFE_SETSOCKOPT(fd, SOL_RDS, SO_RDS_TRANSPORT, &val, sizeof(val));
+
+	SAFE_BIND(fd, (struct sockaddr *)&addr, sizeof(addr));
+
+	addr.sin_port = htons(TEST_PORT + 1);
+
+	memset(control, 0, sizeof(control));
+	cmsg = (struct cmsghdr *)control;
+	cmsg->cmsg_level = SOL_RDS;
+	cmsg->cmsg_type = RDS_CMSG_ZCOPY_COOKIE;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(uint32_t));
+
+	/* Vulnerable kernels may crash here or during subsequent cleanup. */
+	ret = sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_DONTWAIT);
+	if (ret >= 0)
+		tst_brk(TBROK, "sendmsg() unexpectedly succeeded");
+	else
+		tst_res(TINFO | TERRNO, "sendmsg() failed as expected");
+
+	SAFE_CLOSE(fd);
+
+	cleanup();
+
+	if (tst_taint_check())
+		tst_res(TFAIL, "Kernel is vulnerable");
+	else
+		tst_res(TPASS, "Kernel survived RDS zerocopy cleanup");
+}
+
+static void cleanup(void)
+{
+	if (buffer_cloned) {
+		io_uring_register(ring_fd2, IORING_UNREGISTER_BUFFERS, NULL, 0);
+		buffer_cloned = 0;
+	}
+
+	if (buffer_registered) {
+		io_uring_register(ring_fd1, IORING_UNREGISTER_BUFFERS, NULL, 0);
+		buffer_registered = 0;
+	}
+
+	if (ring_fd2 >= 0) {
+		SAFE_CLOSE(ring_fd2);
+		ring_fd2 = -1;
+	}
+
+	if (ring_fd1 >= 0) {
+		SAFE_CLOSE(ring_fd1);
+		ring_fd1 = -1;
+	}
+
+	if (mapped_pages) {
+		SAFE_MUNMAP(mapped_pages, 2 * page_size);
+		mapped_pages = NULL;
+	}
 }
 
 static struct tst_test test = {
 	.setup = setup,
 	.test_all = run,
+	.cleanup = cleanup,
+	.taint_check = TST_TAINT_W | TST_TAINT_D,
+	.save_restore = (const struct tst_path_val[]) {
+		{"/proc/sys/kernel/io_uring_disabled", "0",
+			TST_SR_SKIP_MISSING | TST_SR_TCONF_RO},
+		{}
+	}
 };
