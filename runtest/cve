@@ -83,7 +83,7 @@ cve-2021-22600 setsockopt09
 cve-2021-38604 mq_notify03
 cve-2022-0847 dirtypipe
 cve-2022-2590 dirtyc0w_shmem
-pintheft pintheft
+cve-2026-43494 cve-2026-43494
 cve-2022-23222 bpf_prog07
 cve-2023-1829 tcindex01
 cve-2023-0461 setsockopt10
