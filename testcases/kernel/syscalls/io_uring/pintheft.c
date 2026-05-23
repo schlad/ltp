@@ -72,6 +72,7 @@ struct clone_buffers_arg {
 
 static int ring_fd1 = -1;
 static int ring_fd2 = -1;
+static int rds_fd = -1;
 static int buffer_registered;
 static int buffer_cloned;
 static long page_size;
@@ -95,7 +96,6 @@ static void setup(void)
 {
 	struct io_uring_params params = {};
 	struct iovec fixed_iov;
-	int rds_fd;
 	int val;
 
 	page_size = SAFE_SYSCONF(_SC_PAGESIZE);
@@ -127,10 +127,6 @@ static void setup(void)
 	/* PinTheft uses the RDS TCP transport, so base RDS is not enough. */
 	val = RDS_TRANS_TCP;
 	if (setsockopt(rds_fd, SOL_RDS, SO_RDS_TRANSPORT, &val, sizeof(val))) {
-		int err = errno;
-
-		close(rds_fd);
-		errno = err;
 		if (errno == ENOPROTOOPT || errno == EINVAL)
 			tst_brk(TCONF | TERRNO, "RDS TCP transport is not available");
 
@@ -180,8 +176,6 @@ static void setup(void)
 	}
 
 	buffer_cloned = 1;
-
-	SAFE_CLOSE(rds_fd);
 }
 
 static void trigger(void)
@@ -215,12 +209,9 @@ static void trigger(void)
 		.msg_control = control,
 		.msg_controllen = sizeof(control),
 	};
-	int rds_fd;
 	int ret;
 	int val;
 	int i, efaults, first_bad_errno = 0;
-
-	rds_fd = SAFE_SOCKET(AF_RDS, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
 
 	/* Mirror the public PoC trigger: RDS zerocopy over TCP. */
 	val = 1;
@@ -232,9 +223,6 @@ static void trigger(void)
 
 	val = 2 * page_size * 4;
 	SAFE_SETSOCKOPT(rds_fd, SOL_SOCKET, SO_SNDBUF, &val, sizeof(val));
-
-	val = RDS_TRANS_TCP;
-	SAFE_SETSOCKOPT(rds_fd, SOL_RDS, SO_RDS_TRANSPORT, &val, sizeof(val));
 
 	/*
 	 * Bind to one loopback RDS port and send to another unbound local port.
@@ -296,8 +284,6 @@ static void trigger(void)
 	if (efaults < GUP_PIN_COUNTING_BIAS)
 		tst_res(TWARN, "Only %d/%d sends returned EFAULT - FOLL_PIN counter may not be fully drained",
 			efaults, GUP_PIN_COUNTING_BIAS);
-
-	SAFE_CLOSE(rds_fd);
 
 	/*
 	 * Unregistering fixed buffers on a vulnerable kernel triggers a
@@ -403,6 +389,11 @@ static void cleanup(void)
 	if (ring_fd1 >= 0) {
 		SAFE_CLOSE(ring_fd1);
 		ring_fd1 = -1;
+	}
+
+	if (rds_fd >= 0) {
+		SAFE_CLOSE(rds_fd);
+		rds_fd = -1;
 	}
 
 	if (mapped_pages) {
