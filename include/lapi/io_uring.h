@@ -265,6 +265,10 @@ struct io_uring_probe {
 
 #endif /* IOSQE_FIXED_FILE */
 
+#ifndef IORING_REGISTER_CLONE_BUFFERS
+# define IORING_REGISTER_CLONE_BUFFERS	30
+#endif
+
 #ifndef IOSQE_IO_HADRLINK
 /* like LINK, but stronger */
 #define IOSQE_IO_HARDLINK_BIT	3

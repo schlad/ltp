@@ -49,16 +49,7 @@
 
 #include "tst_test.h"
 #include "lapi/io_uring.h"
-
-/* Build-time fallback for older userspace headers. */
-#ifndef IORING_REGISTER_CLONE_BUFFERS
-# define IORING_REGISTER_CLONE_BUFFERS	30
-#endif
-
-/* Build-time fallback for older userspace headers. */
-#ifndef SO_ZEROCOPY
-# define SO_ZEROCOPY	60
-#endif
+#include "lapi/socket.h"
 
 #define CLEANUP_WAIT_SECS	30
 #define RSS_CHECK_CHILDREN	8
