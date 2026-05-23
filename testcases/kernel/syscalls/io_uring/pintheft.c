@@ -293,7 +293,7 @@ static void trigger(void)
 
 	if (first_bad_errno) {
 		tst_res(TINFO, "sendmsg() returned unexpected errno %d (%s) on at least one iteration",
-			first_bad_errno, strerror(first_bad_errno));
+			first_bad_errno, tst_strerrno(first_bad_errno));
 	}
 
 	tst_res(TINFO, "Completed %d/%d sendmsg() attempts with EFAULT",
