@@ -126,8 +126,10 @@ static void setup(void)
 
 	/* PinTheft uses the RDS TCP transport, so base RDS is not enough. */
 	val = RDS_TRANS_TCP;
-	if (setsockopt(rds_fd, SOL_RDS, SO_RDS_TRANSPORT, &val, sizeof(val))) {
-		if (errno == ENOPROTOOPT || errno == EINVAL)
+	TEST(setsockopt(rds_fd, SOL_RDS, SO_RDS_TRANSPORT, &val, sizeof(val)));
+
+	if (TST_RET) {
+		if (TST_ERR == ENOPROTOOPT || TST_ERR == EINVAL)
 			tst_brk(TCONF | TERRNO, "RDS TCP transport is not available");
 
 		tst_brk(TBROK | TERRNO, "setsockopt(SO_RDS_TRANSPORT) failed");
