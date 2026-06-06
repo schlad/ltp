@@ -5,11 +5,14 @@
  *
  * Copyright (C) 2020 Cyril Hrubis <chrubis@suse.cz>
  *
+ * Copyright (C) 2026 Sebastian Chlad <sebastian.chlad@suse.com>
+ *
  * Tests for asynchronous I/O raw API i.e io_uring_setup(), io_uring_register()
- * and io_uring_enter(). This tests validate basic API operation by creating a
+ * and io_uring_enter(). This test validates basic API operation by creating a
  * submission queue and a completion queue using io_uring_setup(). User buffer
  * registered in the kernel for long term operation using io_uring_register().
- * This tests initiates I/O operations with the help of io_uring_enter().
+ * This test initiates I/O operations using io_uring_submit() and
+ * io_uring_cqe_wait() helpers built on top of io_uring_enter().
  */
 #include "io_uring_common.h"
 
@@ -27,7 +30,6 @@ static struct tcase {
 };
 
 static struct io_uring_submit s;
-static sigset_t sig;
 static struct iovec *iov;
 
 static int setup_io_uring_test(struct io_uring_submit *s, struct tcase *tc)
@@ -58,72 +60,58 @@ static void check_buffer(char *buffer, size_t len)
 
 static void drain_uring_cq(struct io_uring_submit *s, unsigned int exp_events)
 {
-	struct io_cq_ring *cring = &s->cq_ring;
-	unsigned int head = *cring->head;
 	unsigned int events = 0;
+	struct io_uring_cqe *cqe;
+	struct iovec *iovecs;
 
-	for (head = *cring->head; head != *cring->tail; head++) {
-		struct io_uring_cqe *cqe = &cring->cqes[head & *s->cq_ring.ring_mask];
-
+	while (events < exp_events) {
+		cqe = io_uring_cqe_wait(s, NULL);
 		events++;
 
 		if (cqe->res < 0) {
 			tst_res(TFAIL, "CQE result %s", tst_strerrno(-cqe->res));
 		} else {
-			struct iovec *iovecs = (void*)cqe->user_data;
+			iovecs = (void *)cqe->user_data;
 
 			if (cqe->res == BLOCK_SZ)
 				tst_res(TPASS, "CQE result %i", cqe->res);
 			else
-				tst_res(TFAIL, "CQE result %i expected %i", cqe->res, BLOCK_SZ);
+				tst_res(TFAIL, "CQE result %i expected %i",
+					cqe->res, BLOCK_SZ);
 
 			check_buffer(iovecs[0].iov_base, cqe->res);
 		}
+
+		io_uring_cqe_seen(s);
 	}
 
-	*cring->head = head;
-
-	if (exp_events == events) {
+	if (exp_events == events)
 		tst_res(TPASS, "Got %u completion events", events);
-		return;
-	}
-
-	tst_res(TFAIL, "Got %u completion events expected %u",
-	        events, exp_events);
+	else
+		tst_res(TFAIL, "Got %u completion events expected %u",
+			events, exp_events);
 }
 
 static int submit_to_uring_sq(struct io_uring_submit *s, struct tcase *tc)
 {
-	int ret;
+	struct io_uring_sqe *sqe;
 	int fd;
 
 	memset(iov->iov_base, 0, iov->iov_len);
 
-	ret = io_uring_register(s->ring_fd, tc->register_opcode,
-				iov, QUEUE_DEPTH);
-	if (ret == 0) {
-		tst_res(TPASS, "io_uring_register() passed");
-	} else {
+	if (io_uring_register(s->ring_fd, tc->register_opcode,
+			      iov, QUEUE_DEPTH)) {
 		tst_res(TFAIL | TERRNO, "io_uring_register() failed");
 		return 1;
 	}
+	tst_res(TPASS, "io_uring_register() passed");
 
 	fd = SAFE_OPEN(TEST_FILE, O_RDONLY);
 
-	/* Submit SQE using common helper */
-	io_uring_submit_sqe_internal(s, fd, tc->enter_flags,
-				     (unsigned long)iov->iov_base,
-				     BLOCK_SZ, 0,
-				     (unsigned long long)iov);
-
-	ret = io_uring_enter(s->ring_fd, 1, 1, IORING_ENTER_GETEVENTS, &sig);
-	if (ret == 1) {
-		tst_res(TPASS, "io_uring_enter() waited for 1 event");
-	} else {
-		tst_res(TFAIL | TERRNO, "io_uring_enter() returned %i", ret);
-		SAFE_CLOSE(fd);
-		return 1;
-	}
+	sqe = io_uring_get_sqe(s);
+	io_uring_prep_rw(sqe, tc->enter_flags, fd, iov->iov_base, BLOCK_SZ, 0);
+	io_uring_sqe_set_data64(sqe, (uint64_t)iov);
+	io_uring_submit(s);
 
 	SAFE_CLOSE(fd);
 	return 0;
