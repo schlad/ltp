@@ -18,6 +18,7 @@
 #include "tst_test.h"
 #include "lapi/io_uring.h"
 
+/* Common structures for io_uring ring management */
 struct io_sq_ring {
 	unsigned int *head;
 	unsigned int *tail;
@@ -119,165 +120,6 @@ static inline void io_uring_cleanup_queue(struct io_uring_submit *s,
 }
 
 /*
- * Internal helper to submit a single SQE to the submission queue
- * Used by both vectored and non-vectored I/O operations
- */
-static inline void io_uring_submit_sqe_internal(struct io_uring_submit *s,
-						int fd, int opcode,
-						unsigned long addr,
-						unsigned int len,
-						off_t offset,
-						unsigned long long user_data)
-{
-	struct io_sq_ring *sring = &s->sq_ring;
-	unsigned int tail, index;
-	struct io_uring_sqe *sqe;
-
-	tail = *sring->tail;
-	index = tail & *sring->ring_mask;
-	sqe = &s->sqes[index];
-
-	memset(sqe, 0, sizeof(*sqe));
-	sqe->opcode = opcode;
-	sqe->fd = fd;
-	sqe->addr = addr;
-	sqe->len = len;
-	sqe->off = offset;
-	sqe->user_data = user_data;
-
-	sring->array[index] = index;
-	tail++;
-
-	*sring->tail = tail;
-}
-
-/*
- * Submit a single SQE to the submission queue
- * For basic read/write operations (non-vectored)
- */
-static inline void io_uring_submit_sqe(struct io_uring_submit *s, int fd,
-				       int opcode, void *buf, size_t len,
-				       off_t offset)
-{
-	io_uring_submit_sqe_internal(s, fd, opcode, (unsigned long)buf,
-				     len, offset, opcode);
-}
-
-/*
- * Submit a vectored SQE to the submission queue
- * For readv/writev operations
- */
-static inline void io_uring_submit_sqe_vec(struct io_uring_submit *s, int fd,
-					   int opcode, struct iovec *iovs,
-					   int nr_vecs, off_t offset)
-{
-	io_uring_submit_sqe_internal(s, fd, opcode, (unsigned long)iovs,
-				     nr_vecs, offset, opcode);
-}
-
-/*
- * Map io_uring operation code to human-readable name
- */
-static inline const char *ioring_op_name(int op)
-{
-	switch (op) {
-	case IORING_OP_READV:
-		return "IORING_OP_READV";
-	case IORING_OP_WRITEV:
-		return "IORING_OP_WRITEV";
-	case IORING_OP_READ:
-		return "IORING_OP_READ";
-	case IORING_OP_WRITE:
-		return "IORING_OP_WRITE";
-	default:
-		return "UNKNOWN";
-	}
-}
-
-/*
- * Wait for and validate a completion queue entry
- * Aborts test on failure using tst_brk()
- */
-static inline void io_uring_wait_cqe(struct io_uring_submit *s,
-				     int expected_res, int expected_opcode,
-				     sigset_t *sig)
-{
-	struct io_cq_ring *cring = &s->cq_ring;
-	struct io_uring_cqe *cqe;
-	unsigned int head;
-	int ret;
-
-	ret = io_uring_enter(s->ring_fd, 1, 1, IORING_ENTER_GETEVENTS, sig);
-	if (ret < 0)
-		tst_brk(TBROK | TERRNO, "io_uring_enter() failed");
-
-	head = *cring->head;
-	if (head == *cring->tail)
-		tst_brk(TBROK, "No completion event received");
-
-	cqe = &cring->cqes[head & *cring->ring_mask];
-
-	if (cqe->user_data != (uint64_t)expected_opcode) {
-		*cring->head = head + 1;
-		tst_brk(TBROK, "Unexpected user_data: got %llu, expected %d",
-			(unsigned long long)cqe->user_data, expected_opcode);
-	}
-
-	if (cqe->res != expected_res) {
-		*cring->head = head + 1;
-		tst_brk(TBROK, "Operation failed: res=%d, expected=%d",
-			cqe->res, expected_res);
-	}
-
-	*cring->head = head + 1;
-}
-
-/*
- * Initialize buffer with a repeating character pattern
- * Useful for creating test data with predictable patterns
- */
-static inline void io_uring_init_buffer_pattern(char *buf, size_t size,
-						char pattern)
-{
-	size_t i;
-
-	for (i = 0; i < size; i++)
-		buf[i] = pattern;
-}
-
-/*
- * Submit and wait for a non-vectored I/O operation
- * Combines io_uring_submit_sqe() and io_uring_wait_cqe() with result reporting
- */
-static inline void io_uring_do_io_op(struct io_uring_submit *s, int fd,
-				     int op, void *buf, size_t len,
-				     off_t offset, sigset_t *sig)
-{
-	io_uring_submit_sqe(s, fd, op, buf, len, offset);
-	io_uring_wait_cqe(s, len, op, sig);
-	tst_res(TPASS, "OP=%s (%02x) fd=%i buf=%p len=%zu offset=%jd",
-		ioring_op_name(op), op, fd, buf, len, (intmax_t)offset);
-}
-
-/*
- * Submit and wait for a vectored I/O operation
- * Combines io_uring_submit_sqe_vec() and io_uring_wait_cqe() with
- * result reporting
- */
-static inline void io_uring_do_vec_io_op(struct io_uring_submit *s, int fd,
-					 int op, struct iovec *iovs,
-					 int nvecs, off_t offset,
-					 int expected_size, sigset_t *sig)
-{
-	io_uring_submit_sqe_vec(s, fd, op, iovs, nvecs, offset);
-	io_uring_wait_cqe(s, expected_size, op, sig);
-	tst_res(TPASS, "OP=%s (%02x) fd=%i iovs=%p nvecs=%i offset=%jd "
-		"expected_size=%i",
-		ioring_op_name(op), op, fd, iovs, nvecs, (intmax_t)offset,
-		expected_size);
-}
-
-/*
  * Get the next available SQE slot from the submission ring.
  * The SQE is zeroed and tracked as pending until io_uring_submit() is called.
  */
@@ -352,12 +194,12 @@ static inline void io_uring_sqe_set_data64(struct io_uring_sqe *sqe,
 static inline void io_uring_submit(struct io_uring_submit *s)
 {
 	unsigned int pending = s->sq_pending;
+	unsigned int tail;
 
 	if (!pending)
 		return;
 
-	unsigned int tail = *s->sq_ring.tail + pending;
-
+	tail = *s->sq_ring.tail + pending;
 	__atomic_store(s->sq_ring.tail, &tail, __ATOMIC_RELEASE);
 	s->sq_pending = 0;
 
@@ -373,13 +215,12 @@ static inline struct io_uring_cqe *io_uring_cqe_wait(struct io_uring_submit *s,
 						      sigset_t *sig)
 {
 	struct io_cq_ring *cring = &s->cq_ring;
+	unsigned int cq_tail;
 	int ret;
 
 	ret = io_uring_enter(s->ring_fd, 0, 1, IORING_ENTER_GETEVENTS, sig);
 	if (ret < 0)
 		tst_brk(TBROK | TERRNO, "io_uring_enter() failed");
-
-	unsigned int cq_tail;
 
 	__atomic_load(cring->tail, &cq_tail, __ATOMIC_ACQUIRE);
 	if (*cring->head == cq_tail)
@@ -397,6 +238,5 @@ static inline void io_uring_cqe_seen(struct io_uring_submit *s)
 
 	__atomic_store(s->cq_ring.head, &head, __ATOMIC_RELEASE);
 }
-
 
 #endif /* IO_URING_COMMON_H */
