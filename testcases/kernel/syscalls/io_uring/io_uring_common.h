@@ -3,6 +3,8 @@
  * Copyright (C) 2026 IBM
  * Author: Sachin Sant <sachinp@linux.ibm.com>
  *
+ * Copyright (C) 2026 Sebastian Chlad <sebastian.chlad@suse.com>
+ *
  * Common definitions and helper functions for io_uring tests
  */
 
@@ -16,7 +18,6 @@
 #include "tst_test.h"
 #include "lapi/io_uring.h"
 
-/* Common structures for io_uring ring management */
 struct io_sq_ring {
 	unsigned int *head;
 	unsigned int *tail;
@@ -43,6 +44,7 @@ struct io_uring_submit {
 	size_t sq_ptr_size;
 	void *cq_ptr;
 	size_t cq_ptr_size;
+	unsigned int sq_pending;
 };
 
 /*
@@ -274,5 +276,127 @@ static inline void io_uring_do_vec_io_op(struct io_uring_submit *s, int fd,
 		ioring_op_name(op), op, fd, iovs, nvecs, (intmax_t)offset,
 		expected_size);
 }
+
+/*
+ * Get the next available SQE slot from the submission ring.
+ * The SQE is zeroed and tracked as pending until io_uring_submit() is called.
+ */
+static inline struct io_uring_sqe *io_uring_get_sqe(struct io_uring_submit *s)
+{
+	struct io_sq_ring *sring = &s->sq_ring;
+	unsigned int index = (*sring->tail + s->sq_pending) & *sring->ring_mask;
+	struct io_uring_sqe *sqe = &s->sqes[index];
+
+	memset(sqe, 0, sizeof(*sqe));
+	sring->array[index] = index;
+	s->sq_pending++;
+
+	return sqe;
+}
+
+/*
+ * Generic SQE fill for read/write family operations.
+ * Does not touch user_data - caller sets it via io_uring_sqe_set_data64().
+ */
+static inline void io_uring_prep_rw(struct io_uring_sqe *sqe, int opcode,
+				    int fd, const void *addr, unsigned int len,
+				    off_t offset)
+{
+	sqe->opcode = opcode;
+	sqe->fd = fd;
+	sqe->addr = (unsigned long)addr;
+	sqe->len = len;
+	sqe->off = offset;
+}
+
+static inline void io_uring_prep_read(struct io_uring_sqe *sqe, int fd,
+				      void *buf, size_t len, off_t offset)
+{
+	io_uring_prep_rw(sqe, IORING_OP_READ, fd, buf, len, offset);
+}
+
+static inline void io_uring_prep_write(struct io_uring_sqe *sqe, int fd,
+				       const void *buf, size_t len, off_t offset)
+{
+	io_uring_prep_rw(sqe, IORING_OP_WRITE, fd, buf, len, offset);
+}
+
+static inline void io_uring_prep_readv(struct io_uring_sqe *sqe, int fd,
+				       struct iovec *iovs, int nr_vecs,
+				       off_t offset)
+{
+	io_uring_prep_rw(sqe, IORING_OP_READV, fd, iovs, nr_vecs, offset);
+}
+
+static inline void io_uring_prep_writev(struct io_uring_sqe *sqe, int fd,
+					struct iovec *iovs, int nr_vecs,
+					off_t offset)
+{
+	io_uring_prep_rw(sqe, IORING_OP_WRITEV, fd, iovs, nr_vecs, offset);
+}
+
+/*
+ * Set the user_data field of an SQE. user_data is returned verbatim in the
+ * corresponding CQE and must be unique per in-flight request to allow correct
+ * correlation of completions.
+ */
+static inline void io_uring_sqe_set_data64(struct io_uring_sqe *sqe,
+					   uint64_t data)
+{
+	sqe->user_data = data;
+}
+
+/*
+ * Submit all pending SQEs to the kernel.
+ */
+static inline void io_uring_submit(struct io_uring_submit *s)
+{
+	unsigned int pending = s->sq_pending;
+
+	if (!pending)
+		return;
+
+	unsigned int tail = *s->sq_ring.tail + pending;
+
+	__atomic_store(s->sq_ring.tail, &tail, __ATOMIC_RELEASE);
+	s->sq_pending = 0;
+
+	if (io_uring_enter(s->ring_fd, pending, 0, 0, NULL) < 0)
+		tst_brk(TBROK | TERRNO, "io_uring_enter() failed");
+}
+
+/*
+ * Wait for the next CQE and return a pointer to it.
+ * Does not advance the CQ head - call io_uring_cqe_seen() when done.
+ */
+static inline struct io_uring_cqe *io_uring_cqe_wait(struct io_uring_submit *s,
+						      sigset_t *sig)
+{
+	struct io_cq_ring *cring = &s->cq_ring;
+	int ret;
+
+	ret = io_uring_enter(s->ring_fd, 0, 1, IORING_ENTER_GETEVENTS, sig);
+	if (ret < 0)
+		tst_brk(TBROK | TERRNO, "io_uring_enter() failed");
+
+	unsigned int cq_tail;
+
+	__atomic_load(cring->tail, &cq_tail, __ATOMIC_ACQUIRE);
+	if (*cring->head == cq_tail)
+		tst_brk(TBROK, "No completion event received");
+
+	return &cring->cqes[*cring->head & *cring->ring_mask];
+}
+
+/*
+ * Mark the current CQE as consumed, advancing the CQ head.
+ */
+static inline void io_uring_cqe_seen(struct io_uring_submit *s)
+{
+	unsigned int head = *s->cq_ring.head + 1;
+
+	__atomic_store(s->cq_ring.head, &head, __ATOMIC_RELEASE);
+}
+
 
 #endif /* IO_URING_COMMON_H */
