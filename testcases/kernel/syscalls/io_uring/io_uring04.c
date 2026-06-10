@@ -205,8 +205,13 @@ static void trigger(void)
 	 * Each send pins page 0, faults on page 1 (PROT_NONE), and on a
 	 * vulnerable kernel double-drops page 0's reference. EFAULT is the
 	 * expected error; other errors do not count as successful steals.
+	 * Loop until GUP_PIN_COUNTING_BIAS EFAULTs are collected or 10x that
+	 * many attempts have been made, giving margin when some iterations do
+	 * not trigger EFAULT.
 	 */
-	for (i = 0, efaults = 0; i < GUP_PIN_COUNTING_BIAS; i++) {
+	for (i = 0, efaults = 0;
+	     efaults < GUP_PIN_COUNTING_BIAS && i < 10 * GUP_PIN_COUNTING_BIAS;
+	     i++) {
 		/* rds_cmsg_zcopy() in net/rds/send.c */
 		*(uint32_t *)CMSG_DATA(cmsg) = (uint32_t)i;
 
