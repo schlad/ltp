@@ -103,7 +103,8 @@ test1()
 
 	kill -TERM $!
 	wait $! 2>/dev/null
-	umount cgroup/
+	tst_umount $PWD/cgroup
+	sync
 	check_kernel_bug
 }
 
@@ -149,6 +150,7 @@ test2()
 
 	rmdir cgroup/0 cgroup/1
 	tst_umount $PWD/cgroup
+	sync
 }
 
 #---------------------------------------------------------------------------
@@ -217,6 +219,7 @@ test4()
 	mkdir cgroup/0
 	rmdir cgroup/0
 	tst_umount $PWD/cgroup
+	sync
 
 	if dmesg | grep -q "MAX_LOCKDEP_SUBCLASSES too low"; then
 		tst_res TFAIL "lockdep BUG was found"
@@ -249,6 +252,7 @@ test5()
 	mkdir cgroup/0
 	rmdir cgroup/0
 	tst_umount $PWD/cgroup
+	sync
 	check_kernel_bug
 }
 
@@ -272,7 +276,8 @@ test6()
 	wait $pid1 2>/dev/null
 	wait $pid2 2>/dev/null
 
-	umount cgroup/ 2> /dev/null
+	tst_umount $PWD/cgroup
+	sync
 	check_kernel_bug
 }
 
@@ -308,7 +313,8 @@ test_7_1()
 		mount -t cgroup -o remount xxx cgroup/ 2> /dev/null
 		kill -TERM $!
 		wait $! 2>/dev/null
-		umount cgroup/
+		tst_umount $PWD/cgroup
+		sync
 	fi
 
 	cgroup_cleanup
@@ -333,7 +339,8 @@ test_7_2()
 	mount -t cgroup -o remount,$subsys xxx cgroup/ 2> /dev/null
 	kill -TERM $!
 	wait $! 2>/dev/null
-	umount cgroup/
+	tst_umount $PWD/cgroup
+	sync
 
 	grep -q -w "cpu" /proc/cgroups
 	if [ $? -ne 0 -o ! -e /proc/sched_debug ]; then
@@ -389,7 +396,8 @@ test8()
 		tst_res TFAIL "should have failed to get cgroupstat of tasks file"
 	fi
 
-	umount cgroup/
+	tst_umount $PWD/cgroup
+	sync
 	check_kernel_bug
 }
 
