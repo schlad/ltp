@@ -1,4 +1,5 @@
 #DESCRIPTION:Resource Management testing
+cgroup_regression01	cgroup_regression01
 cgroup_core01	cgroup_core01
 cgroup_core02	cgroup_core02
 cgroup_core03	cgroup_core03
