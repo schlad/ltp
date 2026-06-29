@@ -160,6 +160,17 @@ tst_cg_group_name(const struct tst_cg_group *const cg)
 int tst_cg_group_unified_dir_fd(const struct tst_cg_group *const cg)
 		      __attribute__ ((nonnull, warn_unused_result));
 
+/**
+ * tst_cg_group_dir_fd() - Get a controller's CGroup directory descriptor.
+ * @cg: CGroup containing the controller.
+ * @ctrl_name: Controller name.
+ *
+ * Return: A borrowed directory descriptor. The caller must not close it or
+ * remove the group itself.
+ */
+int tst_cg_group_dir_fd(const struct tst_cg_group *cg, const char *ctrl_name)
+		      __attribute__ ((nonnull, warn_unused_result));
+
 /* Remove a descendant CGroup */
 struct tst_cg_group *
 tst_cg_group_rm(struct tst_cg_group *const cg)

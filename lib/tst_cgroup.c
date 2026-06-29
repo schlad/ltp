@@ -1179,6 +1179,19 @@ int tst_cg_group_unified_dir_fd(const struct tst_cg_group *const cg)
 	return -1;
 }
 
+int tst_cg_group_dir_fd(const struct tst_cg_group *cg, const char *ctrl_name)
+{
+	const struct cgroup_ctrl *ctrl = cgroup_find_ctrl(ctrl_name, 1);
+
+	if (!ctrl || !cg->dirs_by_ctrl[ctrl->ctrl_indx]) {
+		tst_brk(TBROK, "Controller '%s' not attached to CGroup %s",
+			ctrl_name, cg->group_name);
+		return -1;
+	}
+
+	return cg->dirs_by_ctrl[ctrl->ctrl_indx]->dir_fd;
+}
+
 struct tst_cg_group *tst_cg_group_rm(struct tst_cg_group *const cg)
 {
 	struct cgroup_dir **dir;
