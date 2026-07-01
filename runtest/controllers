@@ -9,6 +9,7 @@ cgroup_regression04	cgroup_regression04
 cgroup_regression05	cgroup_regression05
 cgroup_regression06	cgroup_regression06
 cgroup_regression07	cgroup_regression07
+cgroup_regression08	cgroup_regression08
 cgroup		cgroup_regression_test.sh
 memcg_regression	memcg_regression_test.sh
 memcg_test_3	memcg_test_3
