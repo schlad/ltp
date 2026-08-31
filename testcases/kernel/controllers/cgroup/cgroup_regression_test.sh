@@ -32,6 +32,7 @@ do_cleanup()
 	if mountpoint -q cgroup/; then
 		find cgroup/ -maxdepth 1 -depth -exec rmdir {} +
 		umount cgroup/
+		sync
 		rmdir cgroup
 	fi
 }
@@ -104,6 +105,7 @@ test1()
 	kill -TERM $!
 	wait $! 2>/dev/null
 	umount cgroup/
+	sync
 	check_kernel_bug
 }
 
@@ -273,6 +275,7 @@ test6()
 	wait $pid2 2>/dev/null
 
 	umount cgroup/ 2> /dev/null
+	sync
 	check_kernel_bug
 }
 
@@ -309,6 +312,7 @@ test_7_1()
 		kill -TERM $!
 		wait $! 2>/dev/null
 		umount cgroup/
+		sync
 	fi
 
 	cgroup_cleanup
@@ -334,6 +338,7 @@ test_7_2()
 	kill -TERM $!
 	wait $! 2>/dev/null
 	umount cgroup/
+	sync
 
 	grep -q -w "cpu" /proc/cgroups
 	if [ $? -ne 0 -o ! -e /proc/sched_debug ]; then
@@ -390,6 +395,7 @@ test8()
 	fi
 
 	umount cgroup/
+	sync
 	check_kernel_bug
 }
 
