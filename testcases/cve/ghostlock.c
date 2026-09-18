@@ -252,12 +252,15 @@ static void run(void)
 		if (TST_THREAD_STATE_WAIT(waiter_tid, 'S', 10000))
 			tst_brk(TBROK | TERRNO, "waiter thread did not block");
 
+		dump_task_wchan(owner_tid, "owner pre-requeue");
+		dump_task_wchan(waiter_tid, "waiter pre-requeue");
+
 		TEST(futex_cmp_requeue_pi(&f_wait, &f_pi_target));
 		if (TST_ERR == ENOSYS)
 			tst_brk(TCONF, "FUTEX_CMP_REQUEUE_PI not supported");
 		if (TST_RET != -1 || TST_ERR != EDEADLK) {
-			dump_task_wchan(owner_tid, "owner");
-			dump_task_wchan(waiter_tid, "waiter");
+			dump_task_wchan(owner_tid, "owner post-requeue");
+			dump_task_wchan(waiter_tid, "waiter post-requeue");
 			tst_brk(TBROK | TTERRNO, "FUTEX_CMP_REQUEUE_PI did not return -EDEADLK");
 		}
 
