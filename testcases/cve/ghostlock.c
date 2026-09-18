@@ -32,6 +32,7 @@
 #include "tst_timer.h"
 #include "tst_safe_clocks.h"
 #include "tst_safe_pthread.h"
+#include "tst_safe_file_ops.h"
 #include "lapi/syscalls.h"
 #include "lapi/sched.h"
 #include "lapi/prctl.h"
@@ -168,6 +169,21 @@ static void *owner_fn(void *arg LTP_ATTRIBUTE_UNUSED)
 	return NULL;
 }
 
+/*
+ * Reports which kernel function (if any) a thread is currently blocked in,
+ * to tell apart an undetected real deadlock from a topology/timing miss
+ * when FUTEX_CMP_REQUEUE_PI does not return -EDEADLK as expected.
+ */
+static void dump_task_wchan(pid_t tid, const char *name)
+{
+	char path[128], wchan[64] = "?";
+
+	snprintf(path, sizeof(path), "/proc/self/task/%d/wchan", tid);
+	FILE_SCANF(path, "%63s", wchan);
+
+	tst_res(TINFO, "%s (tid %d) wchan: %s", name, tid, wchan);
+}
+
 static void setup(void)
 {
 	struct prctl_mm_map map = {
@@ -239,8 +255,11 @@ static void run(void)
 		TEST(futex_cmp_requeue_pi(&f_wait, &f_pi_target));
 		if (TST_ERR == ENOSYS)
 			tst_brk(TCONF, "FUTEX_CMP_REQUEUE_PI not supported");
-		if (TST_RET != -1 || TST_ERR != EDEADLK)
+		if (TST_RET != -1 || TST_ERR != EDEADLK) {
+			dump_task_wchan(owner_tid, "owner");
+			dump_task_wchan(waiter_tid, "waiter");
 			tst_brk(TBROK | TTERRNO, "FUTEX_CMP_REQUEUE_PI did not return -EDEADLK");
+		}
 
 		TST_CHECKPOINT_WAIT2(CP_SPRAYED, 18000);
 
