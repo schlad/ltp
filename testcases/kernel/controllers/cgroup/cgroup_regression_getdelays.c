@@ -21,6 +21,7 @@
 #include <signal.h>
 #include <linux/types.h>
 #include "config.h"
+#include "cgroup_regression_getdelays.h"
 
 #ifdef HAVE_LINUX_GENETLINK_H
 #include <linux/genetlink.h>
@@ -128,7 +129,7 @@ int send_cmd(int sd, __u16 nlmsg_type, __u32 nlmsg_pid,
 	int r, buflen;
 	char *buf;
 
-	struct msgtemplate msg;
+	struct msgtemplate msg = {0};
 
 	msg.n.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN);
 	msg.n.nlmsg_type = nlmsg_type;
@@ -139,7 +140,7 @@ int send_cmd(int sd, __u16 nlmsg_type, __u32 nlmsg_pid,
 	msg.g.version = 0x1;
 	na = (struct nlattr *)GENLMSG_DATA(&msg);
 	na->nla_type = nla_type;
-	na->nla_len = nla_len + 1 + NLA_HDRLEN;
+	na->nla_len = nla_len + NLA_HDRLEN;
 	memcpy(NLA_DATA(na), nla_data, nla_len);
 	msg.n.nlmsg_len += NLMSG_ALIGN(na->nla_len);
 
@@ -170,26 +171,49 @@ int get_family_id(int sd)
 		char buf[256];
 	} ans;
 
-	int id = 0;
 	struct nlattr *na;
-	int rep_len;
+	int rep_len, remaining;
 
 	strcpy(name, TASKSTATS_GENL_NAME);
-	send_cmd(sd, GENL_ID_CTRL, getpid(), CTRL_CMD_GETFAMILY,
-		 CTRL_ATTR_FAMILY_NAME, (void *)name,
-		 strlen(TASKSTATS_GENL_NAME) + 1);
-
-	rep_len = recv(sd, &ans, sizeof(ans), 0);
-	if (ans.n.nlmsg_type == NLMSG_ERROR ||
-	    (rep_len < 0) || !NLMSG_OK((&ans.n), rep_len))
+	if (send_cmd(sd, GENL_ID_CTRL, getpid(), CTRL_CMD_GETFAMILY,
+		     CTRL_ATTR_FAMILY_NAME, name,
+		     strlen(TASKSTATS_GENL_NAME) + 1))
 		return 0;
 
-	na = (struct nlattr *)GENLMSG_DATA(&ans);
-	na = (struct nlattr *)((char *)na + NLA_ALIGN(na->nla_len));
-	if (na->nla_type == CTRL_ATTR_FAMILY_ID) {
-		id = *(__u16 *) NLA_DATA(na);
+	rep_len = recv(sd, &ans, sizeof(ans), 0);
+	if (rep_len < 0)
+		return 0;
+	if (!NLMSG_OK(&ans.n, rep_len)) {
+		errno = EPROTO;
+		return 0;
 	}
-	return id;
+	if (ans.n.nlmsg_type == NLMSG_ERROR) {
+		struct nlmsgerr *error = NLMSG_DATA(&ans.n);
+
+		if (ans.n.nlmsg_len < NLMSG_LENGTH(sizeof(*error)))
+			errno = EPROTO;
+		else
+			errno = error->error < 0 ? -error->error : EPROTO;
+		return 0;
+	}
+
+	if (ans.n.nlmsg_type != GENL_ID_CTRL ||
+	    ans.n.nlmsg_len < NLMSG_LENGTH(GENL_HDRLEN)) {
+		errno = EPROTO;
+		return 0;
+	}
+	remaining = ans.n.nlmsg_len - NLMSG_LENGTH(GENL_HDRLEN);
+	na = (struct nlattr *)GENLMSG_DATA(&ans);
+	while (remaining >= NLA_HDRLEN && na->nla_len >= NLA_HDRLEN &&
+	       na->nla_len <= remaining) {
+		if (na->nla_type == CTRL_ATTR_FAMILY_ID &&
+		    na->nla_len == NLA_HDRLEN + sizeof(__u16))
+			return *(__u16 *)NLA_DATA(na);
+		remaining -= NLA_ALIGN(na->nla_len);
+		na = (struct nlattr *)((char *)na + NLA_ALIGN(na->nla_len));
+	}
+	errno = EPROTO;
+	return 0;
 }
 
 void print_delayacct(struct taskstats *t)
@@ -356,8 +380,10 @@ int main(int argc, char *argv[])
 	mypid = getpid();
 	id = get_family_id(nl_sd);
 	if (!id) {
+		int status = errno == ENOENT ? CGROUPSTATS_UNAVAILABLE : 1;
+
 		fprintf(stderr, "Error getting family id, errno %d\n", errno);
-		exit(1);
+		exit(status);
 	}
 	PRINTF("family id %d\n", id);
 
@@ -397,8 +423,8 @@ int main(int argc, char *argv[])
 		rc = send_cmd(nl_sd, id, mypid, CGROUPSTATS_CMD_GET,
 			      CGROUPSTATS_CMD_ATTR_FD, &cfd, sizeof(__u32));
 #else
-		errno = ENOSYS;
-		rc = -1;
+		fprintf(stderr, "Built without cgroupstats support\n");
+		exit(CGROUPSTATS_UNAVAILABLE);
 #endif
 		if (rc < 0) {
 			perror("error sending cgroupstats command");
@@ -419,11 +445,20 @@ int main(int argc, char *argv[])
 				errno);
 			exit(1);
 		}
-		if (msg.n.nlmsg_type == NLMSG_ERROR ||
-		    !NLMSG_OK((&msg.n), rep_len)) {
-			struct nlmsgerr *err = NLMSG_DATA(&msg);
-			fprintf(stderr, "fatal reply error,  errno %d\n",
-				err->error);
+		if (!NLMSG_OK(&msg.n, rep_len))
+			err(1, "Malformed Netlink reply\n");
+		if (msg.n.nlmsg_type == NLMSG_ERROR) {
+			struct nlmsgerr *error = NLMSG_DATA(&msg);
+
+			if (msg.n.nlmsg_len < NLMSG_LENGTH(sizeof(*error)))
+				err(1, "Truncated Netlink error reply\n");
+			if (containerset && error->error == -EINVAL &&
+			    error->msg.nlmsg_type == id &&
+			    error->msg.nlmsg_seq == 0) {
+				fprintf(stderr, "cgroupstats rejected the file with EINVAL\n");
+				exit(CGROUPSTATS_REJECTED);
+			}
+			fprintf(stderr, "Netlink reply error: %d\n", error->error);
 			exit(1);
 		}
 
@@ -533,6 +568,6 @@ done:
 int main(void)
 {
 	printf("System doesn't have needed netlink / taskstats support.\n");
-	return 1;
+	return CGROUPSTATS_UNAVAILABLE;
 }
 #endif
