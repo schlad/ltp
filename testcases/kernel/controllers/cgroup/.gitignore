@@ -1,5 +1,11 @@
-/cgroup_regression_fork_processes
 /cgroup_regression_getdelays
 /cgroup_core01
 /cgroup_core02
 /cgroup_core03
+/cgroup_regression01
+/cgroup_regression02
+/cgroup_regression03
+/cgroup_regression04
+/cgroup_regression05
+/cgroup_regression06
+/cgroup_regression07

@@ -2,7 +2,13 @@
 cgroup_core01	cgroup_core01
 cgroup_core02	cgroup_core02
 cgroup_core03	cgroup_core03
-cgroup		cgroup_regression_test.sh
+cgroup_regression01	cgroup_regression01
+cgroup_regression02	cgroup_regression02
+cgroup_regression03	cgroup_regression03
+cgroup_regression04	cgroup_regression04
+cgroup_regression05	cgroup_regression05
+cgroup_regression06	cgroup_regression06
+cgroup_regression07	cgroup_regression07
 memcg_regression	memcg_regression_test.sh
 memcg_test_3	memcg_test_3
 memcg_failcnt memcg_failcnt.sh
